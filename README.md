@@ -1,54 +1,57 @@
-# PTR Card Generator
+# Federal Stock Report — PTR Card Generator
 
-Generates 1080×1080 PNG card images from congressional Periodic Transaction Reports (PTRs).
+Generate polished 1080x1080 card images from Congressional Periodic Transaction Reports (PTRs).
 
-## Setup
+## Quick Start
 
-Requires Python 3 and Pillow:
+### 1. Clone the repo
 
 ```bash
-pip install Pillow
+git clone https://github.com/BrendanTHartnett/ptr-cards.git
+cd ptr-cards
 ```
 
-Fonts: uses macOS system Helvetica (`/System/Library/Fonts/Helvetica.ttc`). Falls back to default font on other platforms.
+### 2. Install dependencies
 
-## Usage
-
-```python
-from generate_card import generate_ptr_card
-
-data = {
-    "filing_id": "20033751",
-    "name": "RICHARD W. ALLEN",       # ALL CAPS
-    "chamber": "REP.",                 # "REP." or "SEN."
-    "status": "Member",
-    "district": "GA12",               # no hyphen — formatted on render as GA-12
-    "party": "REPUBLICAN",            # "REPUBLICAN" or "DEMOCRAT"
-    "pinned": ["Walmart"],            # optional: asset substrings pinned to top
-    "transactions": [
-        {
-            "asset": "Netflix, Inc. (NFLX)",
-            "owner": "SP",            # SP, JT, DC, or ""
-            "type": "S",              # P=Purchase, S=Sale, E=Exchange
-            "tx_date": "12/12/2025",
-            "notif_date": "01/06/2026",
-            "amount": "$1,001 - $15,000",
-            "detail": "",             # optional subtitle
-        },
-    ],
-}
-
-generate_ptr_card(data, "output.png")
+```bash
+pip install pdfplumber Pillow numpy requests
 ```
 
-## Card Design
+### 3. Generate a card from a PTR URL
 
-- **Header**: `REP./SEN. NAME (STATE-DISTRICT)` in bold
-- **Summary**: transaction count + total amount range in red
-- **Table**: dark slate blue header, color-coded type (P=green, S=red), sorted by amount descending
-- **Pinning**: optional list of asset substrings forced to top of table
-- **Overflow**: when transactions exceed card height, shows count + link to source PDF
+```bash
+python generate_from_url.py "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20033725.pdf"
+```
 
-## Data Source
+This downloads the PTR PDF, parses the transactions, and generates a card image. The output file is saved in the current directory.
 
-[U.S. House Financial Disclosure Reports](https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/)
+### 4. Or use with Claude
+
+Open Claude Code in the `ptr-cards` directory and paste a PTR link:
+
+```
+Generate a PTR card for https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20033725.pdf
+```
+
+Claude will read the CLAUDE.md instructions and handle it automatically.
+
+## Where to find PTR links
+
+Go to the [House Financial Disclosures](https://disclosures-clerk.house.gov/FinancialDisclosure) page, search for a member or browse recent filings, and copy the PDF link for any "PTR" filing type.
+
+## Example Output
+
+The generated card includes:
+- **The Federal Stock Report** branded header
+- Member name, district, party
+- Filing ID, transaction count, total amount range
+- Top 6 transactions sorted by amount (with overflow note)
+- Purchase (P) in green, Sale (S) in red
+
+## Troubleshooting
+
+**"No text extracted from PDF"** — Some older PTRs are scanned images. The parser only works with text-based PDFs (most recent filings are text-based).
+
+**Party field is blank** — The member isn't in the party lookup. Add their last name to `PARTY_LOOKUP` in `generate_from_url.py`.
+
+**Dependencies error** — Make sure you have Python 3.10+ and ran `pip install pdfplumber Pillow numpy requests`.
