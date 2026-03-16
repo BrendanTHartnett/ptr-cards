@@ -15,12 +15,16 @@ import os
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 BG_PATH = os.path.join(ASSETS_DIR, "template_background.png")
 
-# Adobe synced Graveur Variable font paths
+# Graveur Variable font paths — bundled in assets, fallback to Adobe sync
+_BUNDLED_REG = os.path.join(ASSETS_DIR, "Graveur-Regular.otf")
+_BUNDLED_ITAL = os.path.join(ASSETS_DIR, "Graveur-Italic.otf")
 _ADOBE_FONT_DIR = os.path.expanduser(
     "~/Library/Application Support/Adobe/CoreSync/plugins/livetype/.w"
 )
-GRAVEUR_REG = os.path.join(_ADOBE_FONT_DIR, ".55420.otf")
-GRAVEUR_ITAL = os.path.join(_ADOBE_FONT_DIR, ".55421.otf")
+_ADOBE_REG = os.path.join(_ADOBE_FONT_DIR, ".55420.otf")
+_ADOBE_ITAL = os.path.join(_ADOBE_FONT_DIR, ".55421.otf")
+GRAVEUR_REG = _BUNDLED_REG if os.path.exists(_BUNDLED_REG) else _ADOBE_REG
+GRAVEUR_ITAL = _BUNDLED_ITAL if os.path.exists(_BUNDLED_ITAL) else _ADOBE_ITAL
 
 # --- Colors (sampled from designer's rendered PDF) ---
 BLACK = (0, 0, 0)

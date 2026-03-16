@@ -3,4 +3,5 @@ __pycache__/
 *.png
 !assets/*.png
 !assets/*.jpg
+!assets/*.otf
 .DS_Store
