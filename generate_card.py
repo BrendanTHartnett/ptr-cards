@@ -183,10 +183,27 @@ def generate_ptr_card(data, output_path):
     bg = Image.open(BG_PATH).convert("RGBA")
     bg = _recolor_logo(bg, RED)
 
+    # White out the baked-in header label area for TX DATE, NOTIF DATE, AMOUNT
+    # so we can redraw them at the shifted column positions
+    bg_data = np.array(bg)
+    # The header bar is at roughly y=1145-1220; clear the right portion (from TX DATE onward)
+    bg_data[1145:1220, 1400:2400, :] = 0  # make transparent
+    bg = Image.fromarray(bg_data)
+
     # Create white base and composite background on top
     img = Image.new("RGBA", (CANVAS, CANVAS), (255, 255, 255, 255))
     img = Image.alpha_composite(img, bg)
     draw = ImageDraw.Draw(img)
+
+    # Redraw the cleared header labels at correct column positions
+    th_font = _graveur(int(8 * S), "Heavy")
+    # The header bar background is still there for ASSET/OWNER/TYPE;
+    # redraw the dark bar for the cleared section
+    draw.rectangle([1400, 1145, 2400, 1220], fill=(36, 31, 33))
+    th_y = 1145 + 25
+    _cx(draw, "TX DATE", th_font, COL_TXDATE_X, COL_TXDATE_W, th_y, fill=(255, 255, 255))
+    _cx(draw, "NOTIF DATE", th_font, COL_NOTIF_X, COL_NOTIF_W, th_y, fill=(255, 255, 255))
+    _cx(draw, "AMOUNT", th_font, COL_AMOUNT_X, COL_AMOUNT_W, th_y, fill=(255, 255, 255))
 
     # ── 1. Member Name (hero title) ──
     # Render in segments so we can fix old-style "0" by rotating it 90°
