@@ -1,61 +1,43 @@
 #!/usr/bin/env python3
 """
-PTR Card Generator — Generates 1080x1080 Periodic Transaction Report card images.
+PTR Card Generator — Federal Stock Report style.
 
-Usage:
-    from generate_card import generate_ptr_card
-
-    data = {
-        "filing_id": "20033751",
-        "name": "RICHARD W. ALLEN",
-        "chamber": "REP.",          # "REP." or "SEN."
-        "status": "Member",
-        "district": "GA12",         # will be formatted as GA-12
-        "party": "REPUBLICAN",      # or "DEMOCRAT"
-        "pinned": ["Walmart"],      # optional: asset substrings to pin to top
-        "transactions": [
-            {
-                "asset": "Netflix, Inc. (NFLX)",
-                "owner": "SP",      # SP, JT, DC, or ""
-                "type": "S",        # P=Purchase, S=Sale
-                "tx_date": "12/12/2025",
-                "notif_date": "01/06/2026",
-                "amount": "$1,001 - $15,000",
-                "detail": "",       # optional subtitle line
-            },
-        ],
-    }
-
-    generate_ptr_card(data, "output.png")
+Generates 1080x1080 Periodic Transaction Report card images using the
+exact InDesign template specs (2550x2550 canvas, Graveur Variable font,
+background PNG with baked-in static elements).
 """
 
 from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 import os
 
-# --- Color palette ---
-WHITE = (255, 255, 255)
-BLACK = (33, 33, 33)
-DARK_TEXT = (60, 60, 60)
-HEADER_BG = (55, 71, 89)  # dark slate blue table header
-HEADER_TEXT = (255, 255, 255)
-ROW_ALT = (245, 245, 245)
-GREEN = (46, 125, 50)
-RED = (183, 28, 28)
-BLUE = (0, 0, 180)
-BORDER = (180, 180, 180)
-SOURCE_GRAY = (130, 130, 130)
+# --- Asset paths ---
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+BG_PATH = os.path.join(ASSETS_DIR, "template_background.png")
+
+# Adobe synced Graveur Variable font paths
+_ADOBE_FONT_DIR = os.path.expanduser(
+    "~/Library/Application Support/Adobe/CoreSync/plugins/livetype/.w"
+)
+GRAVEUR_REG = os.path.join(_ADOBE_FONT_DIR, ".55420.otf")
+GRAVEUR_ITAL = os.path.join(_ADOBE_FONT_DIR, ".55421.otf")
+
+# --- Colors (sampled from designer's rendered PDF) ---
+BLACK = (0, 0, 0)
+RED = (200, 61, 52)         # #c83d34
+GREEN = (79, 138, 79)       # #4f8a4f
 DETAIL_GRAY = (150, 150, 150)
+ROW_SEP = (102, 102, 102)
 
-# --- Fixed card size ---
-CARD_WIDTH = 1080
-CARD_HEIGHT = 1080
+# --- Canvas size ---
+CANVAS = 2550
+OUTPUT = 1080
+S = 2550 / 612  # pt-to-px scale
 
-# --- Layout ---
-LEFT_MARGIN = 48
-TABLE_LEFT = 48
-TABLE_RIGHT = CARD_WIDTH - 48
+# --- Layout (IDML positions) ---
+MARGIN = 150
+CONTENT_RIGHT = 2400
 
-# Amount range ordering (for sorting by highest first)
 AMOUNT_ORDER = {
     "$1,001 - $15,000": 1,
     "$15,001 - $50,000": 2,
@@ -80,227 +62,256 @@ AMOUNT_RANGES = {
     "$25,000,001 - $50,000,000": (25000001, 50000000),
 }
 
+# Table column positions (x coords in 2550 canvas)
+COL_ASSET_X = 180
+COL_OWNER_X = 1127
+COL_OWNER_W = 136
+COL_TYPE_X = 1319
+COL_TYPE_W = 136
+COL_TXDATE_X = 1511
+COL_TXDATE_W = 274
+COL_NOTIF_X = 1786
+COL_NOTIF_W = 274
+COL_AMOUNT_X = 2060
+COL_AMOUNT_W = 340
+
+# Table row Y positions (text frame tops for 6 rows)
+ROW_Y_POSITIONS = [1250, 1416, 1582, 1749, 1916, 2082]
+ROW_HEIGHT = 89
+
+# Row separator Y positions
+ROW_SEP_Y = [1377, 1543, 1709, 1877, 2043, 2209]
+
+
+def _graveur(size, instance_name, italic=False):
+    path = GRAVEUR_ITAL if italic else GRAVEUR_REG
+    font = ImageFont.truetype(path, size)
+    font.set_variation_by_name(instance_name.encode())
+    return font
+
 
 def get_fonts():
-    """Load Helvetica fonts."""
-    h = "/System/Library/Fonts/Helvetica.ttc"
     fonts = {}
-    try:
-        fonts["title"] = ImageFont.truetype(h, 40, index=1)
-        fonts["info"] = ImageFont.truetype(h, 18)
-        fonts["info_bold"] = ImageFont.truetype(h, 18, index=1)
-        fonts["summary_count"] = ImageFont.truetype(h, 28, index=1)
-        fonts["summary_amt"] = ImageFont.truetype(h, 28, index=1)
-        fonts["summary_sep"] = ImageFont.truetype(h, 28)
-        fonts["th"] = ImageFont.truetype(h, 13, index=1)
-        fonts["td"] = ImageFont.truetype(h, 14)
-        fonts["td_bold"] = ImageFont.truetype(h, 14, index=1)
-        fonts["td_type"] = ImageFont.truetype(h, 15, index=1)
-        fonts["detail"] = ImageFont.truetype(h, 11)
-        fonts["source"] = ImageFont.truetype(h, 12)
-        fonts["overflow"] = ImageFont.truetype(h, 12, index=1)
-    except Exception:
-        base = ImageFont.load_default()
-        for key in ["title", "info", "info_bold", "summary_count", "summary_amt",
-                     "summary_sep", "th", "td", "td_bold", "td_type", "detail",
-                     "source", "overflow"]:
-            fonts[key] = base
+    fonts["title"] = _graveur(int(30 * S), "Display Heavy")
+    fonts["label"] = _graveur(int(12 * S), "Heavy")
+    fonts["value"] = _graveur(int(16 * S), "Subhead")
+    fonts["stats"] = _graveur(int(18 * S), "Subhead Heavy")
+    fonts["stats_sep"] = _graveur(int(18 * S), "Subhead")
+    fonts["td_asset"] = _graveur(int(11 * S), "Heavy")
+    fonts["td"] = _graveur(int(11 * S), "Regular")
+    fonts["td_type"] = _graveur(int(11 * S), "Heavy")
+    fonts["td_amount"] = _graveur(int(11 * S), "Heavy")
+    fonts["detail"] = _graveur(int(9 * S), "Book Italic", italic=True)
+    fonts["overflow"] = _graveur(int(8 * S), "Heavy")
     return fonts
 
 
-def calc_totals(transactions):
-    total_min = sum(AMOUNT_RANGES.get(tx["amount"], (0, 0))[0] for tx in transactions)
-    total_max = sum(AMOUNT_RANGES.get(tx["amount"], (0, 0))[1] for tx in transactions)
-    return total_min, total_max
+def calc_totals(txns):
+    lo = sum(AMOUNT_RANGES.get(t["amount"], (0, 0))[0] for t in txns)
+    hi = sum(AMOUNT_RANGES.get(t["amount"], (0, 0))[1] for t in txns)
+    return lo, hi
 
 
 def fmt(n):
     return f"${n:,.0f}"
 
 
-def format_district(district):
-    """Convert GA12 -> GA-12, PA08 -> PA-08."""
-    letters = ""
-    digits = ""
-    for c in district:
-        if c.isalpha():
-            letters += c
-        else:
-            digits += c
+def format_district(d):
+    letters = "".join(c for c in d if c.isalpha())
+    digits = "".join(c for c in d if not c.isalpha())
     return f"{letters}-{digits}"
+
+
+def _cx(draw, text, font, col_x, col_w, y, fill=BLACK):
+    """Draw text horizontally centered in a column."""
+    bbox = font.getbbox(text)
+    tw = bbox[2] - bbox[0]
+    draw.text((col_x + (col_w - tw) // 2, y), text, fill=fill, font=font)
+
+
+def _bly(font, ref, y):
+    """Baseline-align font with ref font at y."""
+    return y + (ref.getmetrics()[0] - font.getmetrics()[0])
+
+
+def _draw_title_with_fixed_zero(img, draw, font, text, x, y):
+    """Render title text, rotating any '0' characters 90° to fix old-style figures."""
+    cursor_x = x
+    for ch in text:
+        if ch == '0':
+            # Render '0' to a temp image, rotate 90°, then paste
+            bbox = font.getbbox('0')
+            ch_w = bbox[2] - bbox[0]
+            ch_h = bbox[3] - bbox[1]
+            # Generous padding for the glyph
+            pad = 20
+            tmp = Image.new("RGBA", (ch_w + pad * 2, ch_h + pad * 2), (0, 0, 0, 0))
+            tmp_draw = ImageDraw.Draw(tmp)
+            tmp_draw.text((pad - bbox[0], pad - bbox[1]), '0', fill=BLACK, font=font)
+            # Rotate 90° clockwise
+            rotated = tmp.rotate(-90, resample=Image.BICUBIC, expand=True)
+            # Center the rotated glyph in the original character space
+            rw, rh = rotated.size
+            # Calculate paste position to align with text baseline
+            paste_x = int(cursor_x + (ch_w - rw) // 2)
+            paste_y = int(y + bbox[1] + (ch_h - rh) // 2)
+            img.paste(rotated, (paste_x, paste_y), rotated)
+            cursor_x += ch_w
+        else:
+            draw.text((cursor_x, y), ch, fill=BLACK, font=font)
+            cursor_x += draw.textlength(ch, font=font)
+
+
+def _recolor_logo(img, target_red):
+    """Replace the bright red pixels in the logo with target red."""
+    data = np.array(img)
+    r, g, b, a = data[:, :, 0], data[:, :, 1], data[:, :, 2], data[:, :, 3]
+    mask = (r > 150) & (g < 100) & (b < 100) & (a > 128)
+    data[mask, 0] = target_red[0]
+    data[mask, 1] = target_red[1]
+    data[mask, 2] = target_red[2]
+    return Image.fromarray(data)
 
 
 def generate_ptr_card(data, output_path):
     fonts = get_fonts()
     transactions = data["transactions"]
     num_tx = len(transactions)
-    total_min, total_max = calc_totals(transactions)
+    total_lo, total_hi = calc_totals(transactions)
 
-    img = Image.new("RGB", (CARD_WIDTH, CARD_HEIGHT), WHITE)
+    # Load background template and recolor logo to match our RED
+    bg = Image.open(BG_PATH).convert("RGBA")
+    bg = _recolor_logo(bg, RED)
+
+    # Create white base and composite background on top
+    img = Image.new("RGBA", (CANVAS, CANVAS), (255, 255, 255, 255))
+    img = Image.alpha_composite(img, bg)
     draw = ImageDraw.Draw(img)
 
-    y = 28
-
-    # ── Header: REP./SEN. NAME (STATE-DISTRICT) ──
+    # ── 1. Member Name (hero title) ──
+    # Render in segments so we can fix old-style "0" by rotating it 90°
     prefix = data.get("chamber", "REP.")
-    district_fmt = format_district(data["district"])
-    header_line = f"{prefix} {data['name']} ({district_fmt})"
-    draw.text((LEFT_MARGIN, y), header_line, fill=BLACK, font=fonts["title"])
-    y += 48
+    dist = format_district(data["district"])
+    title_text = f"{prefix} {data['name']} ({dist})"
+    _draw_title_with_fixed_zero(img, draw, fonts["title"], title_text, MARGIN, 375)
 
-    # ── Subtitle: Periodic Transaction Report — N Transactions ──
-    subtitle = f"Periodic Transaction Report \u2014 {num_tx} Transactions"
-    draw.text((LEFT_MARGIN, y), subtitle, fill=SOURCE_GRAY, font=fonts["info"])
-    y += 28
+    # ── 2. Filing Info ──
+    y_info = 690
+    lf, vf = fonts["label"], fonts["value"]
 
-    # ── Light grey divider line ──
-    draw.line([LEFT_MARGIN, y, CARD_WIDTH - LEFT_MARGIN, y], fill=BORDER, width=1)
-    y += 14
+    for lbl, val in [("FILING ID: ", f"#{data['filing_id']}"),
+                     ("NAME: ", data["name"].title())]:
+        draw.text((MARGIN, y_info), lbl, fill=BLACK, font=lf)
+        lx = MARGIN + draw.textlength(lbl, font=lf)
+        draw.text((lx, _bly(vf, lf, y_info)), val, fill=BLACK, font=vf)
+        y_info += 75
 
-    # ── Filing ID ──
-    draw.text((LEFT_MARGIN, y), f"Filing ID #{data['filing_id']}", fill=DARK_TEXT, font=fonts["info"])
-    y += 24
+    # Status / State-District / Party on one line
+    draw.text((MARGIN, y_info), "STATUS: ", fill=BLACK, font=lf)
+    sx = MARGIN + draw.textlength("STATUS: ", font=lf)
+    vy = _bly(vf, lf, y_info)
+    draw.text((sx, vy), data["status"], fill=BLACK, font=vf)
 
-    # ── Name ──
-    draw.text((LEFT_MARGIN, y), "Name: ", fill=DARK_TEXT, font=fonts["info"])
-    name_x = LEFT_MARGIN + draw.textlength("Name: ", font=fonts["info"])
-    draw.text((name_x, y), data["name"], fill=BLACK, font=fonts["info_bold"])
-    y += 24
+    draw.text((852, y_info), "STATE/DISTRICT: ", fill=BLACK, font=lf)
+    dx = 852 + draw.textlength("STATE/DISTRICT: ", font=lf)
+    draw.text((dx, vy), dist, fill=BLACK, font=vf)
 
-    # ── Status + State/District + Party ──
-    draw.text((LEFT_MARGIN, y), "Status: ", fill=DARK_TEXT, font=fonts["info"])
-    sx = LEFT_MARGIN + draw.textlength("Status: ", font=fonts["info"])
-    draw.text((sx, y), data["status"], fill=BLACK, font=fonts["info_bold"])
+    draw.text((1569, y_info), "PARTY: ", fill=BLACK, font=lf)
+    px = 1569 + draw.textlength("PARTY: ", font=lf)
+    draw.text((px, vy), data["party"], fill=BLACK, font=vf)
 
-    dist_label_x = LEFT_MARGIN + 230
-    draw.text((dist_label_x, y), "State/District: ", fill=DARK_TEXT, font=fonts["info"])
-    dx = dist_label_x + draw.textlength("State/District: ", font=fonts["info"])
-    draw.text((dx, y), district_fmt, fill=BLACK, font=fonts["info_bold"])
+    # ── 3. Stats Bar ──
+    stats_y = 964
+    x = MARGIN
+    ct = f"{num_tx} Transaction{'s' if num_tx != 1 else ''}"
+    sep = " | "
+    at = f"Total: {fmt(total_hi)} - {fmt(total_lo)}"
 
-    party_label_x = dx + draw.textlength(district_fmt + "    ", font=fonts["info_bold"])
-    draw.text((party_label_x, y), "Party: ", fill=DARK_TEXT, font=fonts["info"])
-    px = party_label_x + draw.textlength("Party: ", font=fonts["info"])
-    party_color = RED if data["party"] == "REPUBLICAN" else BLUE
-    draw.text((px, y), data["party"], fill=party_color, font=fonts["info_bold"])
-    y += 36
+    draw.text((x, stats_y), ct, fill=RED, font=fonts["stats"])
+    x += draw.textlength(ct, font=fonts["stats"])
+    draw.text((x, stats_y), sep, fill=BLACK, font=fonts["stats_sep"])
+    x += draw.textlength(sep, font=fonts["stats_sep"])
+    draw.text((x, stats_y), at, fill=RED, font=fonts["stats"])
 
-    # ── Summary line ──
-    count_text = f"{num_tx} Transactions"
-    sep_text = "  |  "
-    amt_text = f"Total Amount: {fmt(total_max)} - {fmt(total_min)}"
-
-    draw.text((LEFT_MARGIN, y), count_text, fill=RED, font=fonts["summary_count"])
-    cx = LEFT_MARGIN + draw.textlength(count_text, font=fonts["summary_count"])
-    draw.text((cx, y), sep_text, fill=DARK_TEXT, font=fonts["summary_sep"])
-    sx2 = cx + draw.textlength(sep_text, font=fonts["summary_sep"])
-    draw.text((sx2, y), amt_text, fill=RED, font=fonts["summary_amt"])
-    y += 46
-
-    # ── Table ──
-    col_asset_x = TABLE_LEFT + 8
-    col_owner_x = TABLE_LEFT + 340
-    col_type_x = TABLE_LEFT + 400
-    col_txdate_x = TABLE_LEFT + 460
-    col_notif_x = TABLE_LEFT + 580
-    col_amount_x = TABLE_LEFT + 720
-
-    # Table header
-    th_h = 34
-    draw.rectangle([TABLE_LEFT, y, TABLE_RIGHT, y + th_h], fill=HEADER_BG)
-    draw.rectangle([TABLE_LEFT, y, TABLE_RIGHT, y + th_h], outline=HEADER_BG)
-    th_y = y + 10
-    draw.text((col_asset_x, th_y), "ASSET", fill=HEADER_TEXT, font=fonts["th"])
-    draw.text((col_owner_x, th_y), "OWNER", fill=HEADER_TEXT, font=fonts["th"])
-    draw.text((col_type_x, th_y), "TYPE", fill=HEADER_TEXT, font=fonts["th"])
-    draw.text((col_txdate_x, th_y), "TX DATE", fill=HEADER_TEXT, font=fonts["th"])
-    draw.text((col_notif_x, th_y), "NOTIF DATE", fill=HEADER_TEXT, font=fonts["th"])
-    draw.text((col_amount_x, th_y), "AMOUNT", fill=HEADER_TEXT, font=fonts["th"])
-    y += th_h
-
-    table_top = y
-
-    # Pin specified transactions to top, then sort remainder by amount descending
+    # ── 4. Table Data Rows ──
+    # Sort: pinned first, then by amount descending
     pinned_keys = data.get("pinned", [])
-    pinned_tx = []
-    remaining_tx = []
+    pinned, rest = [], []
     if pinned_keys:
-        used_indices = set()
-        for key in pinned_keys:
-            key_lower = key.lower()
-            for i, tx in enumerate(transactions):
-                if i not in used_indices and key_lower in tx["asset"].lower():
-                    pinned_tx.append(tx)
-                    used_indices.add(i)
+        used = set()
+        for k in pinned_keys:
+            kl = k.lower()
+            for i, t in enumerate(transactions):
+                if i not in used and kl in t["asset"].lower():
+                    pinned.append(t)
+                    used.add(i)
                     break
-        remaining_tx = [tx for i, tx in enumerate(transactions) if i not in used_indices]
+        rest = [t for i, t in enumerate(transactions) if i not in used]
     else:
-        remaining_tx = list(transactions)
-    sorted_remaining = sorted(remaining_tx, key=lambda t: AMOUNT_ORDER.get(t["amount"], 0), reverse=True)
-    sorted_tx = pinned_tx + sorted_remaining
+        rest = list(transactions)
+    rest.sort(key=lambda t: AMOUNT_ORDER.get(t["amount"], 0), reverse=True)
+    sorted_tx = pinned + rest
 
-    # Calculate how many rows fit
-    footer_reserve = 80
-    available_h = CARD_HEIGHT - y - footer_reserve
-    ROW_H_DETAIL = 56
-    ROW_H_SIMPLE = 38
+    max_rows = len(ROW_Y_POSITIONS)
+    display = sorted_tx[:max_rows]
+    overflow = num_tx - len(display)
 
-    rows_shown = 0
-    used_h = 0
-    for tx in sorted_tx:
-        rh = ROW_H_DETAIL if tx.get("detail") else ROW_H_SIMPLE
-        if used_h + rh > available_h:
-            break
-        used_h += rh
-        rows_shown += 1
+    for i, tx in enumerate(display):
+        row_y = ROW_Y_POSITIONS[i]
+        text_y = row_y + 25
 
-    overflow_count = num_tx - rows_shown
-    display_tx = sorted_tx[:rows_shown]
-
-    # Draw rows
-    for i, tx in enumerate(display_tx):
+        # Asset name
         has_detail = bool(tx.get("detail"))
-        rh = ROW_H_DETAIL if has_detail else ROW_H_SIMPLE
-        bg = ROW_ALT if i % 2 == 1 else WHITE
-
-        draw.rectangle([TABLE_LEFT, y, TABLE_RIGHT, y + rh], fill=bg)
-        draw.line([TABLE_LEFT, y, TABLE_RIGHT, y], fill=BORDER, width=1)
-
-        asset_y = y + 10 if has_detail else y + (rh // 2) - 8
-        draw.text((col_asset_x, asset_y), tx["asset"], fill=BLACK, font=fonts["td_bold"])
-
         if has_detail:
-            draw.text((col_asset_x + 4, y + 30), tx["detail"], fill=DETAIL_GRAY, font=fonts["detail"])
+            draw.text((COL_ASSET_X, row_y + 12), tx["asset"],
+                       fill=BLACK, font=fonts["td_asset"])
+            draw.text((COL_ASSET_X, row_y + 58), tx["detail"].upper(),
+                       fill=DETAIL_GRAY, font=fonts["detail"])
+        else:
+            draw.text((COL_ASSET_X, text_y), tx["asset"],
+                       fill=BLACK, font=fonts["td_asset"])
 
-        owner = tx.get("owner", "")
-        draw.text((col_owner_x, y + (rh // 2) - 8), owner, fill=DARK_TEXT, font=fonts["td"])
+        # Owner
+        _cx(draw, tx.get("owner", ""), fonts["td"],
+            COL_OWNER_X, COL_OWNER_W, text_y)
 
-        type_char = tx["type"]
-        type_color = GREEN if type_char == "P" else RED
-        draw.text((col_type_x + 8, y + (rh // 2) - 9), type_char, fill=type_color, font=fonts["td_type"])
+        # Type (color-coded)
+        tc = GREEN if tx["type"] == "P" else RED
+        _cx(draw, tx["type"], fonts["td_type"],
+            COL_TYPE_X, COL_TYPE_W, text_y, fill=tc)
 
-        draw.text((col_txdate_x, y + (rh // 2) - 8), tx["tx_date"], fill=DARK_TEXT, font=fonts["td"])
-        draw.text((col_notif_x, y + (rh // 2) - 8), tx["notif_date"], fill=DARK_TEXT, font=fonts["td"])
-        draw.text((col_amount_x, y + (rh // 2) - 8), tx["amount"], fill=DARK_TEXT, font=fonts["td"])
+        # Dates
+        _cx(draw, tx["tx_date"], fonts["td"],
+            COL_TXDATE_X, COL_TXDATE_W, text_y)
+        _cx(draw, tx["notif_date"], fonts["td"],
+            COL_NOTIF_X, COL_NOTIF_W, text_y)
 
-        y += rh
+        # Amount
+        _cx(draw, tx["amount"], fonts["td"],
+            COL_AMOUNT_X, COL_AMOUNT_W, text_y)
 
-    # Table borders
-    draw.line([TABLE_LEFT, y, TABLE_RIGHT, y], fill=BORDER, width=1)
-    draw.line([TABLE_LEFT, table_top - th_h, TABLE_LEFT, y], fill=BORDER, width=1)
-    draw.line([TABLE_RIGHT, table_top - th_h, TABLE_RIGHT, y], fill=BORDER, width=1)
+    # White out unused row slots (background has baked-in gray bands)
+    if len(display) < len(ROW_Y_POSITIONS):
+        # Clear from just after the last used row to end of table area
+        last_used_sep = ROW_SEP_Y[len(display) - 1] if display else ROW_Y_POSITIONS[0]
+        clear_top = last_used_sep + 1
+        clear_bottom = ROW_SEP_Y[-1] + 50  # past the last baked-in row
+        draw.rectangle([0, clear_top, CANVAS, clear_bottom], fill=(255, 255, 255, 255))
 
-    # Footer
-    y += 16
-    if overflow_count > 0:
-        ptr_url = f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/{data['filing_id']}.pdf"
-        overflow_text = f"Plus {overflow_count} additional transactions. See {ptr_url} for more."
-        draw.text((LEFT_MARGIN, y), overflow_text, fill=DARK_TEXT, font=fonts["overflow"])
-        y += 18
+    # ── 5. Row separator lines ──
+    for sy in ROW_SEP_Y[:len(display)]:
+        draw.line([MARGIN, sy, CONTENT_RIGHT, sy], fill=ROW_SEP, width=1)
 
-    source_y = CARD_HEIGHT - 30
-    draw.text((LEFT_MARGIN, source_y),
-              "Source: U.S. House of Representatives Financial Disclosure Reports",
-              fill=SOURCE_GRAY, font=fonts["source"])
+    # ── 6. Overflow note ──
+    if overflow > 0:
+        url = (f"https://disclosures-clerk.house.gov/public_disc/"
+               f"ptr-pdfs/2026/{data['filing_id']}.pdf")
+        draw.text((MARGIN, 2242),
+                  f"Plus {overflow} additional transactions. See {url} for more.",
+                  fill=BLACK, font=fonts["overflow"])
 
+    # ── Downscale to 1080x1080 and save ──
+    img = img.convert("RGB")
+    img = img.resize((OUTPUT, OUTPUT), Image.LANCZOS)
     img.save(output_path, "PNG")
-    print(f"Saved: {output_path} ({img.size[0]}x{img.size[1]})")
+    print(f"Saved: {output_path} ({OUTPUT}x{OUTPUT})")
