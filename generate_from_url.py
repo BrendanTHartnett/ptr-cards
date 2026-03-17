@@ -26,16 +26,52 @@ log = logging.getLogger("ptr-from-url")
 # ---------------------------------------------------------------------------
 # Party lookup from congress_members.json
 # ---------------------------------------------------------------------------
-CONGRESS_MEMBERS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "assets", "congress_members.json"
-)
+import csv
+import json
 
-def _load_party_lookup() -> dict:
-    """Build a last_name -> party dict from congress_members.json."""
+_ASSETS_DIR = os.path.dirname(os.path.abspath(__file__))
+MEMBERS_CSV_PATH = os.path.join(_ASSETS_DIR, "assets", "members_of_congress.csv")
+CONGRESS_JSON_PATH = os.path.join(_ASSETS_DIR, "assets", "congress_members.json")
+
+
+def _load_members_csv() -> list[dict]:
+    """Load members_of_congress.csv into a list of dicts with name/party/chamber."""
+    members = []
+    try:
+        with open(MEMBERS_CSV_PATH, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                full = row.get("Name", "").strip()
+                party = row.get("Party", "").strip()
+                # Parse "Rep. Nancy Pelosi" or "Sen. John Cornyn"
+                chamber = ""
+                name = full
+                if full.startswith("Rep. "):
+                    chamber = "House"
+                    name = full[5:]
+                elif full.startswith("Sen. "):
+                    chamber = "Senate"
+                    name = full[5:]
+                parts = name.split()
+                last = parts[-1] if parts else ""
+                first = parts[0] if parts else ""
+                members.append({
+                    "full_name": name,
+                    "first": first,
+                    "last": last,
+                    "party": party,
+                    "chamber": chamber,
+                })
+    except Exception:
+        pass
+    return members
+
+
+def _load_party_from_json() -> dict:
+    """Fallback: build last_name -> party from congress_members.json."""
     lookup = {}
     try:
-        import json
-        with open(CONGRESS_MEMBERS_PATH) as f:
+        with open(CONGRESS_JSON_PATH) as f:
             data = json.load(f)
         for m in data.get("members", []):
             last = m.get("last_name", "").strip()
@@ -46,24 +82,62 @@ def _load_party_lookup() -> dict:
         pass
     return lookup
 
-PARTY_LOOKUP = _load_party_lookup()
+
+MEMBERS_CSV = _load_members_csv()
+PARTY_JSON_FALLBACK = _load_party_from_json()
 
 KNOWN_OWNER_CODES = {"SP", "JT", "DC", "CS"}
 
 
-def party_lookup(name: str) -> str:
-    """Look up party by last name from congress_members.json."""
-    # Handle "LASTNAME" or "Firstname Lastname" format
+def _find_member_csv(name: str) -> dict | None:
+    """Find a member in the CSV by matching last name (+ first name if ambiguous)."""
     clean = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", name).strip()
-    # Try last word
+    parts = clean.split()
+    if not parts:
+        return None
+
+    last = parts[-1]
+    first = parts[0] if len(parts) > 1 else ""
+
+    # Find all CSV matches by last name (case-insensitive)
+    matches = [m for m in MEMBERS_CSV if m["last"].lower() == last.lower()]
+
+    if len(matches) == 1:
+        return matches[0]
+    elif len(matches) > 1 and first:
+        # Disambiguate by first name
+        for m in matches:
+            if m["first"].lower() == first.lower():
+                return m
+        # Partial first name match
+        for m in matches:
+            if m["first"].lower().startswith(first.lower()[:3]):
+                return m
+        return matches[0]  # fallback to first match
+    return None
+
+
+def canonical_name(pdf_name: str) -> str:
+    """Get the canonical name from the CSV, uppercase. Falls back to cleaned PDF name."""
+    member = _find_member_csv(pdf_name)
+    if member:
+        return member["full_name"].upper()
+    # Fallback: clean up the PDF name
+    clean = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", pdf_name).strip()
+    return clean.upper()
+
+
+def party_lookup(name: str) -> str:
+    """Look up party — CSV first, then JSON fallback."""
+    member = _find_member_csv(name)
+    if member and member["party"]:
+        return member["party"]
+    # Fallback to JSON
+    clean = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", name).strip()
     parts = clean.split()
     if parts:
         last = parts[-1]
-        result = PARTY_LOOKUP.get(last, "")
-        if result:
-            return result
-        # Try case-insensitive
-        for k, v in PARTY_LOOKUP.items():
+        for k, v in PARTY_JSON_FALLBACK.items():
             if k.lower() == last.lower():
                 return v
     return ""
@@ -248,14 +322,12 @@ def pdf_to_card_data(pdf_url: str, pdf_data: dict) -> dict:
     doc_id_match = re.search(r'/(\d+)\.pdf', pdf_url)
     doc_id = doc_id_match.group(1) if doc_id_match else ""
 
-    # Clean up member name
-    name = pdf_data.get("member_name", "")
-    name = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", name).strip()
-    name = name.upper()
+    # Get canonical name from CSV (uppercase)
+    raw_name = pdf_data.get("member_name", "")
+    name = canonical_name(raw_name)
 
     # District from PDF
     district_raw = pdf_data.get("state_district", "")
-    # e.g. "NC05", "CA11", "SC03"
     district = district_raw.strip()
 
     return {
@@ -264,7 +336,7 @@ def pdf_to_card_data(pdf_url: str, pdf_data: dict) -> dict:
         "chamber": "REP.",
         "status": pdf_data.get("status", "Member"),
         "district": district,
-        "party": party_lookup(name),
+        "party": party_lookup(raw_name),
         "pinned": [],
         "transactions": [
             {

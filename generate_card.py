@@ -239,7 +239,19 @@ def generate_ptr_card(data, output_path):
     prefix = data.get("chamber", "REP.")
     dist = format_district(data["district"])
     title_text = f"{prefix} {data['name']} ({dist})"
-    _draw_title_with_fixed_zero(img, draw, fonts["title"], title_text, MARGIN, 375)
+
+    # Auto-shrink title font if text is too wide for the canvas
+    max_title_w = CONTENT_RIGHT - MARGIN
+    title_font = fonts["title"]
+    title_size = int(30 * S)
+    # Measure width with the default font
+    test_w = draw.textlength(title_text, font=title_font)
+    while test_w > max_title_w and title_size > int(16 * S):
+        title_size -= int(1 * S)
+        title_font = _graveur(title_size, "Display Heavy")
+        test_w = draw.textlength(title_text, font=title_font)
+
+    _draw_title_with_fixed_zero(img, draw, title_font, title_text, MARGIN, 375)
 
     # ── 2. Filing Info ──
     y_info = 690
