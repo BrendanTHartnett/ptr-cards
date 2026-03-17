@@ -142,6 +142,24 @@ def _split_asset_and_code(asset_str):
     return asset_str, ""
 
 
+def _wrap_text(text, font, max_width, draw):
+    """Word-wrap text to fit within max_width. Returns list of lines."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        test = f"{current} {word}".strip()
+        if draw.textlength(test, font=font) <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines if lines else [text]
+
+
 def _cx(draw, text, font, col_x, col_w, y, fill=BLACK):
     """Draw text horizontally centered in a column."""
     bbox = font.getbbox(text)
@@ -198,9 +216,9 @@ def generate_ptr_card(data, output_path):
     bg = Image.open(BG_PATH).convert("RGBA")
     bg = _recolor_logo(bg, RED)
 
-    # White out the baked-in header label area for TX DATE, NOTIF DATE, AMOUNT
+    # White out the baked-in header labels from TYPE onward so we can redraw
     bg_data = np.array(bg)
-    bg_data[1145:1220, 1400:2400, :] = 0
+    bg_data[1145:1220, 1290:2400, :] = 0  # clear from TYPE column onward
     bg = Image.fromarray(bg_data)
 
     # Create white base and composite background on top
@@ -208,10 +226,11 @@ def generate_ptr_card(data, output_path):
     img = Image.alpha_composite(img, bg)
     draw = ImageDraw.Draw(img)
 
-    # Redraw the cleared header labels at correct column positions
+    # Redraw the cleared header area with dark bar and labels
     th_font = _graveur(int(8 * S), "Heavy")
-    draw.rectangle([1400, 1145, 2400, 1220], fill=(36, 31, 33))
+    draw.rectangle([1290, 1145, 2400, 1220], fill=(36, 31, 33))
     th_y = 1145 + 25
+    _cx(draw, "TYPE", th_font, COL_TYPE_X, COL_TYPE_W, th_y, fill=(255, 255, 255))
     _cx(draw, "TX DATE", th_font, COL_TXDATE_X, COL_TXDATE_W, th_y, fill=(255, 255, 255))
     _cx(draw, "NOTIF DATE", th_font, COL_NOTIF_X, COL_NOTIF_W, th_y, fill=(255, 255, 255))
     _cx(draw, "AMOUNT", th_font, COL_AMOUNT_X, COL_AMOUNT_W, th_y, fill=(255, 255, 255))
@@ -290,34 +309,60 @@ def generate_ptr_card(data, output_path):
         row_y = ROW_Y_POSITIONS[i]
         text_y = row_y + 25
 
-        # Asset name — split into name + type code
+        # Asset name — split into name + type code, wrap if too long
         asset_full = tx.get("asset", "")
         asset_name, asset_code = _split_asset_and_code(asset_full)
 
+        # Max width for asset column (leave padding before OWNER)
+        asset_max_w = COL_OWNER_X - COL_ASSET_X - 20
+
+        # Combine name + code to check total width
+        full_display = f"{asset_name} {asset_code}" if asset_code else asset_name
+        full_w = draw.textlength(asset_name, font=fonts["td_asset"])
+        if asset_code:
+            full_w += draw.textlength(" " + asset_code, font=fonts["td_asset_code"])
+
         has_detail = bool(tx.get("detail"))
-        if has_detail:
-            # Bold asset name
-            draw.text((COL_ASSET_X, row_y + 12), asset_name,
+
+        if full_w <= asset_max_w:
+            # Fits on one line
+            ay = row_y + 12 if has_detail else text_y
+            draw.text((COL_ASSET_X, ay), asset_name,
                        fill=BLACK, font=fonts["td_asset"])
-            # Smaller non-bold type code after the name
             if asset_code:
                 name_w = draw.textlength(asset_name + " ", font=fonts["td_asset"])
-                code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], row_y + 12)
+                code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], ay)
                 draw.text((COL_ASSET_X + name_w, code_y), asset_code,
                            fill=DETAIL_GRAY, font=fonts["td_asset_code"])
-            # Detail line
+        else:
+            # Wrap: use the full string (name + code) and wrap it
+            # The code will naturally end up on the last line
+            wrap_text = f"{asset_name} {asset_code}" if asset_code else asset_name
+            wrapped = _wrap_text(wrap_text, fonts["td_asset"], asset_max_w, draw)
+            line_h = 38  # line height in canvas px
+            # Vertically center the wrapped lines in the row
+            total_text_h = len(wrapped) * line_h
+            start_y = row_y + (ROW_HEIGHT - total_text_h) // 2 + 5
+            if has_detail:
+                start_y = row_y + 8
+            for li, wline in enumerate(wrapped):
+                ly = start_y + li * line_h
+                # Check if this line ends with the asset code
+                if asset_code and wline.endswith(asset_code):
+                    name_part = wline[:-len(asset_code)].rstrip()
+                    draw.text((COL_ASSET_X, ly), name_part,
+                               fill=BLACK, font=fonts["td_asset"])
+                    nw = draw.textlength(name_part + " ", font=fonts["td_asset"])
+                    code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], ly)
+                    draw.text((COL_ASSET_X + nw, code_y), asset_code,
+                               fill=DETAIL_GRAY, font=fonts["td_asset_code"])
+                else:
+                    draw.text((COL_ASSET_X, ly), wline,
+                               fill=BLACK, font=fonts["td_asset"])
+
+        if has_detail:
             draw.text((COL_ASSET_X, row_y + 58), tx["detail"].upper(),
                        fill=DETAIL_GRAY, font=fonts["detail"])
-        else:
-            # Bold asset name
-            draw.text((COL_ASSET_X, text_y), asset_name,
-                       fill=BLACK, font=fonts["td_asset"])
-            # Smaller non-bold type code
-            if asset_code:
-                name_w = draw.textlength(asset_name + " ", font=fonts["td_asset"])
-                code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], text_y)
-                draw.text((COL_ASSET_X + name_w, code_y), asset_code,
-                           fill=DETAIL_GRAY, font=fonts["td_asset_code"])
 
         # Owner — em dash if missing
         owner = tx.get("owner", "").strip()
