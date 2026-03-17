@@ -10,6 +10,7 @@ background PNG with baked-in static elements).
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import os
+import re
 
 # --- Asset paths ---
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -41,6 +42,9 @@ S = 2550 / 612  # pt-to-px scale
 # --- Layout (IDML positions) ---
 MARGIN = 150
 CONTENT_RIGHT = 2400
+
+# Em dash for missing data
+EM_DASH = "\u2014"
 
 AMOUNT_ORDER = {
     "$1,001 - $15,000": 1,
@@ -102,11 +106,13 @@ def get_fonts():
     fonts["stats"] = _graveur(int(18 * S), "Subhead Heavy")
     fonts["stats_sep"] = _graveur(int(18 * S), "Subhead")
     fonts["td_asset"] = _graveur(int(11 * S), "Heavy")
+    fonts["td_asset_code"] = _graveur(int(9 * S), "Regular")  # smaller, non-bold for [ST] etc.
     fonts["td"] = _graveur(int(11 * S), "Regular")
     fonts["td_type"] = _graveur(int(11 * S), "Heavy")
     fonts["td_amount"] = _graveur(int(11 * S), "Heavy")
     fonts["detail"] = _graveur(int(9 * S), "Book Italic", italic=True)
     fonts["overflow"] = _graveur(int(8 * S), "Heavy")
+    fonts["footnote"] = _graveur(int(8 * S), "Regular")
     return fonts
 
 
@@ -126,6 +132,16 @@ def format_district(d):
     return f"{letters}-{digits}"
 
 
+def _split_asset_and_code(asset_str):
+    """Split 'Apple Inc. (AAPL) [ST]' into ('Apple Inc. (AAPL)', '[ST]')."""
+    match = re.search(r'\s*(\[[A-Z]{2,4}\])\s*$', asset_str)
+    if match:
+        code = match.group(1)
+        name = asset_str[:match.start()].strip()
+        return name, code
+    return asset_str, ""
+
+
 def _cx(draw, text, font, col_x, col_w, y, fill=BLACK):
     """Draw text horizontally centered in a column."""
     bbox = font.getbbox(text)
@@ -143,20 +159,15 @@ def _draw_title_with_fixed_zero(img, draw, font, text, x, y):
     cursor_x = x
     for ch in text:
         if ch == '0':
-            # Render '0' to a temp image, rotate 90°, then paste
             bbox = font.getbbox('0')
             ch_w = bbox[2] - bbox[0]
             ch_h = bbox[3] - bbox[1]
-            # Generous padding for the glyph
             pad = 20
             tmp = Image.new("RGBA", (ch_w + pad * 2, ch_h + pad * 2), (0, 0, 0, 0))
             tmp_draw = ImageDraw.Draw(tmp)
             tmp_draw.text((pad - bbox[0], pad - bbox[1]), '0', fill=BLACK, font=font)
-            # Rotate 90° clockwise
             rotated = tmp.rotate(-90, resample=Image.BICUBIC, expand=True)
-            # Center the rotated glyph in the original character space
             rw, rh = rotated.size
-            # Calculate paste position to align with text baseline
             paste_x = int(cursor_x + (ch_w - rw) // 2)
             paste_y = int(y + bbox[1] + (ch_h - rh) // 2)
             img.paste(rotated, (paste_x, paste_y), rotated)
@@ -188,10 +199,8 @@ def generate_ptr_card(data, output_path):
     bg = _recolor_logo(bg, RED)
 
     # White out the baked-in header label area for TX DATE, NOTIF DATE, AMOUNT
-    # so we can redraw them at the shifted column positions
     bg_data = np.array(bg)
-    # The header bar is at roughly y=1145-1220; clear the right portion (from TX DATE onward)
-    bg_data[1145:1220, 1400:2400, :] = 0  # make transparent
+    bg_data[1145:1220, 1400:2400, :] = 0
     bg = Image.fromarray(bg_data)
 
     # Create white base and composite background on top
@@ -201,8 +210,6 @@ def generate_ptr_card(data, output_path):
 
     # Redraw the cleared header labels at correct column positions
     th_font = _graveur(int(8 * S), "Heavy")
-    # The header bar background is still there for ASSET/OWNER/TYPE;
-    # redraw the dark bar for the cleared section
     draw.rectangle([1400, 1145, 2400, 1220], fill=(36, 31, 33))
     th_y = 1145 + 25
     _cx(draw, "TX DATE", th_font, COL_TXDATE_X, COL_TXDATE_W, th_y, fill=(255, 255, 255))
@@ -210,7 +217,6 @@ def generate_ptr_card(data, output_path):
     _cx(draw, "AMOUNT", th_font, COL_AMOUNT_X, COL_AMOUNT_W, th_y, fill=(255, 255, 255))
 
     # ── 1. Member Name (hero title) ──
-    # Render in segments so we can fix old-style "0" by rotating it 90°
     prefix = data.get("chamber", "REP.")
     dist = format_district(data["district"])
     title_text = f"{prefix} {data['name']} ({dist})"
@@ -277,57 +283,100 @@ def generate_ptr_card(data, output_path):
     display = sorted_tx[:max_rows]
     overflow = num_tx - len(display)
 
+    # Track if any displayed transactions are partial (for footnote)
+    has_partial = False
+
     for i, tx in enumerate(display):
         row_y = ROW_Y_POSITIONS[i]
         text_y = row_y + 25
 
-        # Asset name
+        # Asset name — split into name + type code
+        asset_full = tx.get("asset", "")
+        asset_name, asset_code = _split_asset_and_code(asset_full)
+
         has_detail = bool(tx.get("detail"))
         if has_detail:
-            draw.text((COL_ASSET_X, row_y + 12), tx["asset"],
+            # Bold asset name
+            draw.text((COL_ASSET_X, row_y + 12), asset_name,
                        fill=BLACK, font=fonts["td_asset"])
+            # Smaller non-bold type code after the name
+            if asset_code:
+                name_w = draw.textlength(asset_name + " ", font=fonts["td_asset"])
+                code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], row_y + 12)
+                draw.text((COL_ASSET_X + name_w, code_y), asset_code,
+                           fill=DETAIL_GRAY, font=fonts["td_asset_code"])
+            # Detail line
             draw.text((COL_ASSET_X, row_y + 58), tx["detail"].upper(),
                        fill=DETAIL_GRAY, font=fonts["detail"])
         else:
-            draw.text((COL_ASSET_X, text_y), tx["asset"],
+            # Bold asset name
+            draw.text((COL_ASSET_X, text_y), asset_name,
                        fill=BLACK, font=fonts["td_asset"])
+            # Smaller non-bold type code
+            if asset_code:
+                name_w = draw.textlength(asset_name + " ", font=fonts["td_asset"])
+                code_y = _bly(fonts["td_asset_code"], fonts["td_asset"], text_y)
+                draw.text((COL_ASSET_X + name_w, code_y), asset_code,
+                           fill=DETAIL_GRAY, font=fonts["td_asset_code"])
 
-        # Owner
-        _cx(draw, tx.get("owner", ""), fonts["td"],
+        # Owner — em dash if missing
+        owner = tx.get("owner", "").strip()
+        _cx(draw, owner if owner else EM_DASH, fonts["td"],
             COL_OWNER_X, COL_OWNER_W, text_y)
 
-        # Type (color-coded)
-        tc = GREEN if tx["type"] == "P" else RED
-        _cx(draw, tx["type"], fonts["td_type"],
-            COL_TYPE_X, COL_TYPE_W, text_y, fill=tc)
+        # Type — color-coded, with * for partial, em dash if missing
+        tx_type = tx.get("type", "").strip()
+        is_partial = tx.get("partial", False)
+        if not tx_type:
+            _cx(draw, EM_DASH, fonts["td"], COL_TYPE_X, COL_TYPE_W, text_y)
+        else:
+            tc = GREEN if tx_type == "P" else RED
+            type_display = tx_type + "*" if is_partial else tx_type
+            _cx(draw, type_display, fonts["td_type"],
+                COL_TYPE_X, COL_TYPE_W, text_y, fill=tc)
+            if is_partial:
+                has_partial = True
 
-        # Dates
-        _cx(draw, tx["tx_date"], fonts["td"],
+        # Dates — em dash if missing
+        tx_date = tx.get("tx_date", "").strip()
+        notif_date = tx.get("notif_date", "").strip()
+        _cx(draw, tx_date if tx_date else EM_DASH, fonts["td"],
             COL_TXDATE_X, COL_TXDATE_W, text_y)
-        _cx(draw, tx["notif_date"], fonts["td"],
+        _cx(draw, notif_date if notif_date else EM_DASH, fonts["td"],
             COL_NOTIF_X, COL_NOTIF_W, text_y)
 
-        # Amount
-        _cx(draw, tx["amount"], fonts["td"],
+        # Amount — em dash if missing
+        amount = tx.get("amount", "").strip()
+        _cx(draw, amount if amount else EM_DASH, fonts["td"],
             COL_AMOUNT_X, COL_AMOUNT_W, text_y)
 
     # White out unused row slots (background has baked-in gray bands)
     if len(display) < len(ROW_Y_POSITIONS):
-        # Clear from just after the last used row to end of table area
         last_used_sep = ROW_SEP_Y[len(display) - 1] if display else ROW_Y_POSITIONS[0]
         clear_top = last_used_sep + 1
-        clear_bottom = ROW_SEP_Y[-1] + 50  # past the last baked-in row
+        clear_bottom = ROW_SEP_Y[-1] + 50
         draw.rectangle([0, clear_top, CANVAS, clear_bottom], fill=(255, 255, 255, 255))
 
     # ── 5. Row separator lines ──
     for sy in ROW_SEP_Y[:len(display)]:
         draw.line([MARGIN, sy, CONTENT_RIGHT, sy], fill=ROW_SEP, width=1)
 
-    # ── 6. Overflow note ──
+    # ── 6. Footnotes + Overflow ──
+    # Position footnotes below the last row separator
+    if display:
+        footnote_y = ROW_SEP_Y[len(display) - 1] + 20
+    else:
+        footnote_y = 2220
+
+    if has_partial:
+        draw.text((MARGIN, footnote_y), "*Partial",
+                  fill=BLACK, font=fonts["footnote"])
+        footnote_y += 35
+
     if overflow > 0:
         url = (f"https://disclosures-clerk.house.gov/public_disc/"
                f"ptr-pdfs/2026/{data['filing_id']}.pdf")
-        draw.text((MARGIN, 2242),
+        draw.text((MARGIN, footnote_y),
                   f"Plus {overflow} additional transactions. See {url} for more.",
                   fill=BLACK, font=fonts["overflow"])
 

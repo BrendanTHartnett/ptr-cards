@@ -11,6 +11,7 @@ Examples:
 """
 
 import io
+import os
 import re
 import sys
 import logging
@@ -23,36 +24,49 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("ptr-from-url")
 
 # ---------------------------------------------------------------------------
-# Party lookup (add more as needed)
+# Party lookup from congress_members.json
 # ---------------------------------------------------------------------------
-PARTY_LOOKUP = {
-    "Pelosi": "Democrat", "Tuberville": "Republican", "Crenshaw": "Republican",
-    "Greene": "Republican", "Ocasio-Cortez": "Democrat", "Schiff": "Democrat",
-    "Gaetz": "Republican", "Boebert": "Republican", "Omar": "Democrat",
-    "Jordan": "Republican", "Stefanik": "Republican", "Khanna": "Democrat",
-    "Gottheimer": "Democrat", "Fallon": "Republican", "Mace": "Republican",
-    "Meuser": "Republican", "Malinowski": "Democrat", "Aderholt": "Republican",
-    "Bresnahan": "Republican", "Gimenez": "Republican", "Curtis": "Republican",
-    "Connolly": "Democrat", "Castor": "Democrat", "Moore": "Republican",
-    "McCaul": "Republican", "Wittman": "Republican", "Scott": "Republican",
-    "Foxx": "Republican", "Biggs": "Republican", "Moskowitz": "Democrat",
-    "Taylor": "Republican", "Allen": "Republican", "Johnson": "Democrat",
-    "Williams": "Republican", "Kelly": "Republican", "Jayapal": "Democrat",
-    "Wagner": "Republican", "Jackson": "Republican",
-}
+CONGRESS_MEMBERS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "assets", "congress_members.json"
+)
+
+def _load_party_lookup() -> dict:
+    """Build a last_name -> party dict from congress_members.json."""
+    lookup = {}
+    try:
+        import json
+        with open(CONGRESS_MEMBERS_PATH) as f:
+            data = json.load(f)
+        for m in data.get("members", []):
+            last = m.get("last_name", "").strip()
+            party = m.get("party", "").strip()
+            if last and party:
+                lookup[last] = party
+    except Exception:
+        pass
+    return lookup
+
+PARTY_LOOKUP = _load_party_lookup()
 
 KNOWN_OWNER_CODES = {"SP", "JT", "DC", "CS"}
 
 
 def party_lookup(name: str) -> str:
-    """Look up party by last name."""
-    if "," in name:
-        last = name.split(",")[0].strip()
-    else:
-        parts = name.strip().split()
-        last = parts[-1] if parts else ""
-    last = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", last).strip()
-    return PARTY_LOOKUP.get(last, "")
+    """Look up party by last name from congress_members.json."""
+    # Handle "LASTNAME" or "Firstname Lastname" format
+    clean = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", name).strip()
+    # Try last word
+    parts = clean.split()
+    if parts:
+        last = parts[-1]
+        result = PARTY_LOOKUP.get(last, "")
+        if result:
+            return result
+        # Try case-insensitive
+        for k, v in PARTY_LOOKUP.items():
+            if k.lower() == last.lower():
+                return v
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +123,18 @@ def parse_ptr_pdf(pdf_url: str) -> dict:
             r'$\1 - $\3', full_text
         )
 
+        # Build a map of continuation lines (lines with [XX] type codes but no dates)
+        # These are wrapped asset names that follow a transaction line
+        lines = full_text.split('\n')
+        continuation_map = {}  # line_number -> continuation text
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if (re.search(r'\[[A-Z]{2,4}\]', stripped)
+                    and not re.search(r'\d{1,2}/\d{1,2}/\d{4}', stripped)
+                    and not stripped.startswith('*')
+                    and idx > 0):
+                continuation_map[idx] = stripped
+
         # Regex for transactions
         txn_pattern = re.compile(
             r'([^\n]*?)\s+'
@@ -118,7 +144,25 @@ def parse_ptr_pdf(pdf_url: str) -> dict:
             r'\$([\d,]+)\s*-\s*\$([\d,]+)',
         )
 
-        matches = txn_pattern.findall(full_text)
+        raw_matches = txn_pattern.findall(full_text)
+
+        # Post-process: find continuation lines and append to asset names
+        # First find which line each match is on
+        matches = []
+        for m in raw_matches:
+            asset_raw = m[0]
+            # Find which line this match is on
+            match_line_idx = None
+            for idx, line in enumerate(lines):
+                if asset_raw.strip() in line and re.search(r'\d{1,2}/\d{1,2}/\d{4}', line):
+                    match_line_idx = idx
+                    break
+            # Check if the next line is a continuation
+            continuation = ""
+            if match_line_idx is not None and (match_line_idx + 1) in continuation_map:
+                continuation = " " + continuation_map[match_line_idx + 1]
+            # Rebuild the match tuple with appended continuation
+            matches.append((m[0] + continuation, *m[1:]))
 
         if not matches:
             # Fallback
@@ -159,13 +203,25 @@ def parse_ptr_pdf(pdf_url: str) -> dict:
                 owner = first_word
                 asset_text = asset_text[len(first_word):].strip()
 
-            asset_clean = re.sub(r'\s*\[[A-Z]{2,4}\]\s*', ' ', asset_text).strip()
-            asset_clean = re.sub(r'\s+New\s*$', '', asset_clean).strip()
+            # Preserve asset type code [ST], [CS], etc. but clean up other artifacts
+            asset_clean = re.sub(r'\s+New\s*$', '', asset_text).strip()
+            # Extract the type code if present
+            code_match = re.search(r'\s*(\[[A-Z]{2,4}\])\s*$', asset_clean)
+            asset_type_code = code_match.group(1) if code_match else ""
+            if code_match:
+                asset_clean = asset_clean[:code_match.start()].strip()
             if len(asset_clean) > 80:
                 asset_clean = asset_clean[:77] + "..."
+            # Reattach the type code
+            if asset_type_code:
+                asset_clean = f"{asset_clean} {asset_type_code}"
+
+            # Check if partial
+            is_partial = "partial" in txn_type.lower()
 
             result["transactions"].append({
                 "owner": owner, "asset": asset_clean, "type": txn_type[0],
+                "partial": is_partial,
                 "txn_date": txn_date, "notif_date": notif_date,
                 "amount_low": low, "amount_high": high,
                 "amount_display": f"${low:,} - ${high:,}",
@@ -215,6 +271,7 @@ def pdf_to_card_data(pdf_url: str, pdf_data: dict) -> dict:
                 "asset": t["asset"],
                 "owner": t["owner"],
                 "type": t["type"],
+                "partial": t.get("partial", False),
                 "tx_date": t["txn_date"],
                 "notif_date": t["notif_date"],
                 "amount": t["amount_display"],

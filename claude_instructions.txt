@@ -1,0 +1,80 @@
+# PTR Card Generator
+
+## Setup
+1. Clone the repo: `gh repo clone BrendanTHartnett/ptr-cards`
+2. Install dependency: `pip install Pillow`
+3. The generator script is `generate_card.py` — it exports `generate_ptr_card(data, output_path)`
+
+## What This Is
+Generates 1080x1080 PNG card images from congressional Periodic Transaction Reports (PTRs).
+Source: U.S. House Financial Disclosure Reports at `https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/`.
+
+## Workflow — When User Provides a PTR Link
+
+1. **Fetch & extract** the PDF data (use WebFetch to download, then Read the PDF)
+2. **Build the data dict** with all fields:
+   - `filing_id`, `name` (ALL CAPS), `chamber` ("REP." or "SEN."), `status`, `district` (no hyphen, e.g. "GA12"), `party` ("REPUBLICAN" or "DEMOCRAT")
+   - `transactions`: list of dicts with `asset`, `owner`, `type`, `tx_date`, `notif_date`, `amount`, optional `detail`
+   - Owner field: use what the PDF says (SP=Spouse, JT=Joint, DC=Dependent Child, or "" if self/not specified)
+3. **Ask the user**: "Are there any transactions you want pinned to the top of the table?"
+   - If yes, add `"pinned": ["substring1", "substring2"]` to the data dict
+   - If no, omit the pinned field
+4. **Generate the card**: call `generate_ptr_card(data, output_path)` and save to `~/Downloads/<lastname>_ptr_card.png`
+5. **Show the result** by reading the generated image
+
+## Data Dict Schema
+
+{
+    "filing_id": "20033751",
+    "name": "RICHARD W. ALLEN",       # ALL CAPS
+    "chamber": "REP.",                 # "REP." or "SEN."
+    "status": "Member",
+    "district": "GA12",               # no hyphen in data, formatted on render
+    "party": "REPUBLICAN",
+    "pinned": ["Walmart", "Netflix"],  # optional
+    "transactions": [
+        {
+            "asset": "Netflix, Inc. (NFLX)",  # short name + ticker
+            "owner": "SP",                     # SP, JT, DC, or ""
+            "type": "S",                       # P, S, or E
+            "tx_date": "12/12/2025",
+            "notif_date": "01/06/2026",
+            "amount": "$1,001 - $15,000",
+            "detail": "",                      # optional subtitle
+        },
+    ],
+}
+
+## Amount Range Strings (use exactly)
+- $1,001 - $15,000
+- $15,001 - $50,000
+- $50,001 - $100,000
+- $100,001 - $250,000
+- $250,001 - $500,000
+- $500,001 - $1,000,000
+- $1,000,001 - $5,000,000
+
+## Party Lookup
+Look up the member's party from the PDF context or your knowledge. All House members have districts.
+
+## Card Design Details
+- Canvas: 1080x1080 white background, 48px left/right margins
+- Header: "REP./SEN. NAME (ST-00)" — Helvetica Bold 40px, color (33,33,33)
+- Subtitle: "Periodic Transaction Report — N Transactions" — Helvetica 18px, color (130,130,130)
+- Divider: 1px line, color (180,180,180)
+- Filing info: Helvetica 18px labels (60,60,60), bold values (33,33,33)
+- Party colors: Republican = red (183,28,28), Democrat = blue (0,0,180)
+- Summary: Helvetica Bold 28px, red (183,28,28), format: "N Transactions | Total Amount: $HIGH - $LOW"
+- Table header: dark slate blue (55,71,89) with white text, Helvetica Bold 13px
+- Table columns: ASSET | OWNER | TYPE | TX DATE | NOTIF DATE | AMOUNT
+- Type colors: P (Purchase) = green (46,125,50), S (Sale) = red (183,28,28)
+- Row height: 38px normal, 56px with detail subtitle
+- Alternating rows: white / light grey (245,245,245)
+- Sorting: by amount descending, pinned items override to top
+- Overflow: "Plus N additional transactions. See [url] for more."
+- Source: bottom of card, Helvetica 12px, grey (130,130,130)
+
+## Modifying the Design
+The generator is in `generate_card.py`. All colors are defined as RGB tuples at the top of the file.
+Layout positions (column x-coordinates, margins, row heights) are also at the top or in `generate_ptr_card()`.
+Fonts are loaded in `get_fonts()` — currently Helvetica from macOS system fonts.
