@@ -56,6 +56,7 @@ def _load_members_csv() -> list[dict]:
                 last = parts[-1] if parts else ""
                 first = parts[0] if parts else ""
                 members.append({
+                    "csv_name": full,  # exact CSV entry, e.g. "Rep. Kelly Morrison"
                     "full_name": name,
                     "first": first,
                     "last": last,
@@ -118,10 +119,11 @@ def _find_member_csv(name: str) -> dict | None:
 
 
 def canonical_name(pdf_name: str) -> str:
-    """Get the canonical name from the CSV, uppercase. Falls back to cleaned PDF name."""
+    """Get the canonical name from the CSV, uppercase. Returns full CSV name including prefix.
+    Falls back to cleaned PDF name."""
     member = _find_member_csv(pdf_name)
     if member:
-        return member["full_name"].upper()
+        return member["csv_name"].upper()
     # Fallback: clean up the PDF name
     clean = re.sub(r"(?i)\bHon\.?\s*\.?\s*", "", pdf_name).strip()
     return clean.upper()
@@ -330,13 +332,16 @@ def pdf_to_card_data(pdf_url: str, pdf_data: dict) -> dict:
     district_raw = pdf_data.get("state_district", "")
     district = district_raw.strip()
 
+    party = party_lookup(raw_name)
+    if not party:
+        party = "Unknown"
+
     return {
         "filing_id": pdf_data.get("filing_id") or doc_id,
         "name": name,
-        "chamber": "REP.",
         "status": pdf_data.get("status", "Member"),
         "district": district,
-        "party": party_lookup(raw_name),
+        "party": party,
         "pinned": [],
         "transactions": [
             {

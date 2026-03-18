@@ -3,6 +3,20 @@
 ## What this project does
 Generates 1080x1080 PNG "Federal Stock Report" card images from U.S. House Periodic Transaction Report (PTR) PDFs. These are polished, branded images using the Graveur Variable font and a designer template.
 
+## First-time setup
+
+```bash
+cd ~/ptr-cards  # or wherever you cloned it
+pip install -r requirements.txt
+```
+
+If you don't have the repo yet:
+```bash
+git clone https://github.com/BrendanTHartnett/ptr-cards.git ~/ptr-cards
+cd ~/ptr-cards
+pip install -r requirements.txt
+```
+
 ## How to generate a PTR card from a URL
 
 When the user gives you a PTR PDF URL (from disclosures-clerk.house.gov), run:
@@ -23,27 +37,43 @@ Example:
 python generate_from_url.py "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20033725.pdf"
 ```
 
-The output file path is printed at the end — read it to show the user.
+The output file path is printed at the end — read the image to show the user.
 
-## If party is missing
-The card has a `PARTY:` field. If it shows blank, the member isn't in the party lookup dict in `generate_from_url.py`. You can add them to the `PARTY_LOOKUP` dict (key = last name, value = "Republican" or "Democrat").
+## Finding PTR PDFs
 
-## If the PDF fails to parse
-Some older PTR PDFs are scanned images rather than text-based. The parser will warn "No text extracted from PDF." In this case, the user will need to manually provide the transaction data.
+To search for recent filings, POST to the House disclosure search:
+```bash
+curl -s -X POST "https://disclosures-clerk.house.gov/FinancialDisclosure/ViewMemberSearchResult" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "FilingYear=2026&State=&District=&LastName=&FilingType=P" \
+  | grep -oE 'ptr-pdfs/2026/[0-9]+' | sort -u
+```
+Each ID maps to: `https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/<ID>.pdf`
 
 ## Key files
 - `generate_card.py` — core card image generator (Graveur font, 2550x2550 canvas, downscaled to 1080x1080)
-- `generate_from_url.py` — full pipeline: URL → PDF parse → card generation
-- `assets/` — background template, Graveur fonts, logos
+- `generate_from_url.py` — full pipeline: URL -> PDF parse -> card generation. Contains the PDF parser, CSV-based name/party lookup, and card data adapter.
+- `assets/members_of_congress.csv` — canonical member names and party affiliations. Two columns: `Name` (e.g. "Rep. Nancy Pelosi") and `Party` (e.g. "Democrat").
+- `assets/template_background.png` — designer's background template
+- `assets/Graveur-Regular.otf`, `assets/Graveur-Italic.otf` — bundled fonts
+
+## How the name and party work
+- The bold title (e.g. "REP. NANCY PELOSI (CA-11)") pulls the member's name exactly from `assets/members_of_congress.csv`, including the Rep./Sen. prefix.
+- Party is also looked up from the CSV. If a member isn't found, party shows "Unknown".
+- To add or fix a member, edit `assets/members_of_congress.csv` — just add a row like `Rep. John Smith,Republican`.
 
 ## Design specs
 - Font: Graveur Variable (bundled in assets/)
-- Background: designer's InDesign template (assets/template_background.png)
-- Colors: Red (200, 61, 52), Green (79, 138, 79)
+- Background: designer's InDesign template
+- Colors: Red `(200, 61, 52)`, Green `(79, 138, 79)`
+- Canvas: 2550x2550, downscaled to 1080x1080
 - Table: up to 6 rows, sorted by amount descending, overflow note for extras
-- The "0" in district numbers is rotated 90° to fix Graveur's old-style figures
+- The "0" in district numbers is rotated 90 degrees to fix Graveur's old-style figures
+- Purchase = green, Sale = red
 
-## Dependencies
-```
-pip install pdfplumber Pillow numpy requests
-```
+## Making changes
+- **Card layout/fonts/colors**: edit `generate_card.py`
+- **PDF parsing logic**: edit `parse_ptr_pdf()` in `generate_from_url.py`
+- **Name/party data**: edit `assets/members_of_congress.csv`
+- After making changes, test by generating a card and reading the output image to verify it looks right.
+- If you make improvements, commit and push so the changes are shared.

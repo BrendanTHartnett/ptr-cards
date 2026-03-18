@@ -236,9 +236,8 @@ def generate_ptr_card(data, output_path):
     _cx(draw, "AMOUNT", th_font, COL_AMOUNT_X, COL_AMOUNT_W, th_y, fill=(255, 255, 255))
 
     # ── 1. Member Name (hero title) ──
-    prefix = data.get("chamber", "REP.")
     dist = format_district(data["district"])
-    title_text = f"{prefix} {data['name']} ({dist})"
+    title_text = f"{data['name']} ({dist})"
 
     # Auto-shrink title font if text is too wide for the canvas
     max_title_w = CONTENT_RIGHT - MARGIN
@@ -257,8 +256,10 @@ def generate_ptr_card(data, output_path):
     y_info = 690
     lf, vf = fonts["label"], fonts["value"]
 
+    # Strip chamber prefix (REP./SEN.) for the NAME field
+    display_name = re.sub(r'^(?:REP|SEN)\.?\s*', '', data["name"], flags=re.IGNORECASE).title()
     for lbl, val in [("FILING ID: ", f"#{data['filing_id']}"),
-                     ("NAME: ", data["name"].title())]:
+                     ("NAME: ", display_name)]:
         draw.text((MARGIN, y_info), lbl, fill=BLACK, font=lf)
         lx = MARGIN + draw.textlength(lbl, font=lf)
         draw.text((lx, _bly(vf, lf, y_info)), val, fill=BLACK, font=vf)
